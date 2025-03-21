@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>单速率三色标记算法演示</title>
+    <style>
+        .control-panel { 
+            margin: 20px; 
+            padding: 15px; 
+            border: 1px solid #ccc;
+            background: #f5f5f5;
+        }
+        .param-group { 
+            margin: 10px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        canvas { 
+            border: 1px solid #999; 
+            margin: 20px;
+            background: #fff;
+        }
+        label { min-width: 120px; }
+        
+        <style>
+            /* 新增响应式样式 */
+            body {
+                margin: 0;
+                padding: 20px;
+                display: flex;
+                flex-direction: column;
+                min-height: 100vh;
+                box-sizing: border-box;
+            }
+            
+            .control-panel {
+                width: 100%;
+                max-width: 800px;
+                margin: 0 auto 20px; /* 控制面板居中 */
+            }
+            
+            /* 新增按钮组样式 */
+            .button-group {
+                display: flex;
+                gap: 15px;
+                justify-content: center; /* 按钮居中 */
+                margin: 20px auto;
+                width: 100%;
+                max-width: 800px;
+            }
+            
+            canvas {
+                width: 100%;
+                max-width: 800px;
+                height: auto;
+                aspect-ratio: 2 / 1;
+                margin: 0 auto; /* 画布居中 */
+                display: block;
+            }
+            
+            @media (max-width: 768px) {
+                .button-group {
+                    flex-direction: column;
+                    padding: 0 20px;
+                }
+            }
+        </style>
+    </style>
+</head>
+<body>
+    <div class="control-panel">
+        <h3>算法参数</h3>
+        <div class="param-group">
+            <label>CIR (bps):</label>
+            <input type="range" id="cir" min="100" max="10000" step="100">
+            <span id="cirValue">1000</span>
+        </div>
+        <div class="param-group">
+            <label>CBS (bytes):</label>
+            <input type="range" id="cbs" min="500" max="5000" step="100">
+            <span id="cbsValue">2000</span>
+        </div>
+        <div class="param-group">
+            <label>EBS (bytes):</label>
+            <input type="range" id="ebs" min="500" max="5000" step="100">
+            <span id="ebsValue">2000</span>
+        </div>
+        <div class="param-group">
+            <label>报文尺寸 (bytes):</label>
+            <input type="range" id="packetSize" min="64" max="1500" step="64">
+            <span id="packetSizeValue">512</span>
+        </div>
+        <div class="param-group">
+            <label>到达速率 (pkt/s):</label>
+            <input type="range" id="rate" min="1" max="50" step="1">
+            <span id="rateValue">10</span>
+        </div>
+    </div>
+
+    </div> <!-- 原control-panel结束 -->
+
+    <!-- 新增按钮组 -->
+    <div class="param-group" style="margin:20px 20px 20px 30px; justify-content:flex-start; gap:20px;">
+        <button id="resetBuckets" style="padding:8px 15px;background:#4CAF50;color:white;border:none;border-radius:4px;">
+            重置令牌桶
+        </button>
+        <button id="emptyBuckets" style="padding:8px 15px;background:#f44336;color:white;border:none;border-radius:4px;">
+            清空令牌桶
+        </button>
+    </div>
+
+    <canvas id="animationCanvas" width="800" height="400"></canvas>
+
+
+    <script>
+        class TrafficMetering {
+            constructor() {
+                // 初始状态设为满桶
+                this.tc = config.cbs;  // 使用配置的CBS最大值
+                this.te = config.ebs;  // 使用配置的EBS最大值
+                this.lastUpdate = Date.now();
+            }
+
+            updateTokens() {
+                const now = Date.now();
+                const elapsed = (now - this.lastUpdate) / 1000;
+                
+                // 符合RFC 2697的令牌更新规则
+                // 承诺桶：持续累积令牌，上限CBS
+                // CIR 的单位是 bps (bits per second)，需要转换为字节/秒
+                const bytesPerSecond = config.cir / 8; // 新增转换
+                const newTc = this.tc + bytesPerSecond * elapsed; // 使用字节单位
+                this.tc = Math.min(newTc, config.cbs);
+                
+                // 超额桶：仅当承诺桶满时才开始累积（当前实现符合RFC规范）
+                if (newTc >= config.cbs) {
+                    const excess = newTc - config.cbs;
+                    this.te = Math.min(this.te + excess, config.ebs);
+                }
+                
+                this.lastUpdate = now;
+            }
+
+            markPacket(packetSize) {
+                this.updateTokens();
+                
+                // 严格遵循 RFC 的色盲模式标记规则
+                if (this.tc >= packetSize) {  // 规则 2a
+                    this.tc -= packetSize;
+                    return '#00ff00';
+                } 
+                else if (this.te >= packetSize) {  // 规则 2b（直接检查超额桶）
+                    this.te -= packetSize;  // 应减少完整包尺寸
+                    return '#ffd700';
+                }
+                else {  // 规则 2c
+                    return '#ff0000';
+                }
+            }
+        }
+
+        const canvas = document.getElementById('animationCanvas');
+        const ctx = canvas.getContext('2d');
+        // 在配置部分添加单位说明
+        let config = {
+            cir: 1000,    // 单位：比特/秒 (bps)
+            cbs: 2000,    // 单位：字节 (CIR的持续突发尺寸)
+            ebs: 2000,    // 单位：字节 (超额突发尺寸)
+            packetSize: 512,  // 单位：字节 (用户输入保持不变)
+            rate: 10      // 单位：包/秒
+        };
+        let packets = [];
+        let lastPacketTime = 0;
+        const meter = new TrafficMetering();
+
+        function updateConfig(e) {
+            const paramMap = {
+                cir: 'cirValue',
+                cbs: 'cbsValue',
+                ebs: 'ebsValue',
+                packetSize: 'packetSizeValue',
+                rate: 'rateValue'
+            };
+            
+            const id = e.target.id;
+            config[id] = Number(e.target.value);
+            document.getElementById(paramMap[id]).textContent = config[id];
+        }
+
+        function drawTokenBuckets() {
+            const bucketWidth = 100;
+            const maxHeight = 300;
+            
+            // 承诺桶
+            const tcHeight = (meter.tc / config.cbs) * maxHeight;
+            ctx.fillStyle = 'rgba(0,255,0,0.3)';
+            ctx.fillRect(50, canvas.height - tcHeight, bucketWidth, tcHeight);
+            
+            // 超额桶
+            const teHeight = (meter.te / config.ebs) * maxHeight;
+            ctx.fillStyle = 'rgba(255,215,0,0.3)';
+            ctx.fillRect(200, canvas.height - teHeight, bucketWidth, teHeight);
+            
+            // 添加桶标签
+            ctx.fillStyle = '#000';
+            ctx.textAlign = 'center';
+            ctx.font = '14px Arial';
+            ctx.fillText('Committed', 50 + bucketWidth/2, canvas.height - maxHeight + 20);  // 顶部标签
+            ctx.fillText('Excess', 200 + bucketWidth/2, canvas.height - maxHeight + 20);
+            
+            // 边框保持不变...
+            ctx.strokeStyle = '#000';
+            [50, 200].forEach(x => {
+                ctx.strokeRect(x, canvas.height - maxHeight, bucketWidth, maxHeight);
+            });
+        }
+
+        function updatePackets() {
+            const now = Date.now();
+            
+            if (now - lastPacketTime > 1000 / config.rate) {
+                packets.push({
+                    x: 0,
+                    y: Math.random() * (canvas.height - 50),
+                    color: '#0000ff', // 初始设为蓝色
+                    finalColor: '',   // 添加最终颜色存储
+                    size: config.packetSize
+                });
+                lastPacketTime = now;
+            }
+            
+            packets = packets.filter(p => {
+                p.x += 3;
+                
+                // 当数据包到达桶区域时计算最终颜色
+                if (p.x > 150 && !p.finalColor) {
+                    p.finalColor = meter.markPacket(p.size);
+                }
+                
+                // 使用最终颜色或保持蓝色
+                ctx.fillStyle = p.finalColor || p.color;
+                ctx.beginPath();
+                ctx.roundRect(p.x, p.y, 30, 15, 5);
+                ctx.fill();
+                return p.x < canvas.width;
+            });
+        }
+
+        function drawStats() {
+            ctx.fillStyle = 'black';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'left';  // 设置为左对齐
+            
+            // 保持原有X坐标350，使用左对齐布局
+            ctx.fillText(`承诺令牌: ${meter.tc.toFixed(1)}/${config.cbs}`, 350, 50);
+            ctx.fillText(`超额令牌: ${meter.te.toFixed(1)}/${config.ebs}`, 350, 70);
+            ctx.fillText(`当前速率: ${config.rate} pkt/s`, 350, 90);
+            ctx.fillText(`报文尺寸: ${config.packetSize} bytes`, 350, 110);
+            
+            ctx.textAlign = 'start'; // 恢复默认对齐方式（可选）
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawTokenBuckets();
+            updatePackets();
+            drawStats();
+            requestAnimationFrame(animate);
+        }
+
+        function initControls() {
+            document.querySelectorAll('input[type="range"]').forEach(input => {
+                input.value = config[input.id];
+                input.dispatchEvent(new Event('input'));
+                input.addEventListener('input', updateConfig);
+            });
+            
+            // 新增按钮点击事件监听
+            document.getElementById('resetBuckets').addEventListener('click', () => {
+                meter.tc = config.cbs;
+                meter.te = config.ebs;
+                meter.lastUpdate = Date.now();
+            });
+            
+            document.getElementById('emptyBuckets').addEventListener('click', () => {
+                meter.tc = 0;
+                meter.te = 0;
+                meter.lastUpdate = Date.now();
+            });
+
+            // 修复按钮事件绑定（添加以下代码）
+            document.querySelectorAll('button').forEach(btn => {
+                btn.style.cursor = 'pointer';
+                btn.addEventListener('mouseover', () => btn.style.opacity = '0.8');
+                btn.addEventListener('mouseout', () => btn.style.opacity = '1');
+            });
+        } // 修复此处缺少的闭合括号
+            
+            document.addEventListener('DOMContentLoaded', () => {
+                initControls();  // 确保在DOM加载后初始化按钮
+                animate();
+            });
+        </script>
+    </body>
+    </html>
